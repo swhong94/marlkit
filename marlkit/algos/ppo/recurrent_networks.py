@@ -196,6 +196,26 @@ class RecurrentSharedActor(nn.Module):
         logits = self.head(features) 
         return Categorical(logits=logits), new_hidden 
 
+    def dist(self, 
+             obs: torch.Tensor, 
+             agent_ids: torch.Tensor, 
+             hidden: Optional[Hidden] = None, 
+             done_mask: Optional[torch.Tensor] = None) -> Categorical:
+        """Convenience method matching SharedActor.dist() API. 
+        
+        When called without hidden state (e.g., during evaluation), 
+        initializes hidden to zeros. Returns only the distribution 
+        (Discards) updated hidden), matching the MLP actor interface. 
+        """
+        if hidden is None: 
+            batch_size = obs.size(0) if obs.dim() == 2 else obs.size(1) 
+            hidden = self.init_hidden(batch_size, obs.device) 
+        # Add seq dim if missing: (batch, obs_dim) -> (1, batch, obs_dim) 
+        if obs.dim() == 2: 
+            obs = obs.unsqueeze(0) 
+        dist, _ = self.forward(obs, agent_ids, hidden, done_mask) 
+        return Categorical(logits=dist.logits.squeeze(0))
+
     def init_hidden(self, batch_size: int, device: torch.device) -> Hidden: 
         return self.backbone.init_hidden(batch_size, device) 
 
