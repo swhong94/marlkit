@@ -59,7 +59,7 @@ class PettingZooParallelAdapter:
             # v0 Assumes discrete action
             a0 = self.env.action_space(self.agents[0]) 
             if not hasattr(a0, 'n'): 
-                raise ValueError("v0 only supports discrete actions spaces, got: {a0}")
+                raise ValueError(f"v0 only supports discrete actions spaces, got: {a0}")
             self.action_dim = int(a0.n) 
 
         else:
