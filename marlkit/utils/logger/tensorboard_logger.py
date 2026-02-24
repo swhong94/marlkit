@@ -23,7 +23,7 @@ class TensorBoardLogger(BaseLogger):
 
     def log_config(self): 
         for k, v in self.config.items(): 
-            self.writer.add_text(f"config", f"{k}: {v}")
+            self.writer.add_text(f"config/{k}", str(v))
 
     def close(self): 
         self.writer.close() 
