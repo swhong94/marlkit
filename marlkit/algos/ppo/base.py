@@ -88,7 +88,12 @@ class BasePPOTrainer(abc.ABC):
             truncated = False 
             if isinstance(info, dict): 
                 terminated = bool(info.get("terminated_all", False))
-                truncated = bool(info.get("truncated_all", False)) 
+                truncated = bool(info.get("truncated_all", False))
+            # If the env doesn't provide terminated/truncated flags, 
+            # treat done as truncation (bootstrap with V(s')) so GAE 
+            # doesn't silently ignore episode boundaries 
+            if done and not terminated and not truncated: 
+                truncated = True  
 
             # Compute V(next_obs) from the truncated episode BEFORE reset
             truncation_values = None 

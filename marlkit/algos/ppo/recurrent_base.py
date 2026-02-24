@@ -138,7 +138,8 @@ class RecurrentBasePPOTrainer(abc.ABC):
             if isinstance(info, dict): 
                 terminated = bool(info.get("terminated_all", False)) 
                 truncated = bool(info.get("truncated_all", False)) 
-            
+            if done and not terminated and not truncated: 
+                truncated = True  
             # Truncation bootstrap (using current critic hidden, before reset) 
             truncation_values = None 
             if truncated: 
