@@ -168,7 +168,7 @@ def build_backbone(recurrent_type: str,
 class RecurrentSharedActor(nn.Module): 
     """Parameter-shared actor with recurrent backbone. 
     
-    obs + id_embed -> backbone(GRU/STM/Transformer) -> linear -> action logits
+    obs + id_embed -> backbone(GRU/LSTM/Transformer) -> linear -> action logits
     """
     def __init__(self, 
                  obs_dim: int, 

@@ -9,7 +9,7 @@ class RecurrentMultiAgentRolloutBuffer:
 
     Key difference from MultiAgentRolloutBuffer: 
         - Stores actor/critic hidden states at each step 
-        - get_chunks() returns sequential chunks intead of flath shuffled samples 
+        - get_chunks() returns sequential chunks intead of flat shuffled samples 
     
     Shapes: 
         obs:        (T, N, obs_dim)

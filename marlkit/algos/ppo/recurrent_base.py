@@ -300,10 +300,28 @@ class RecurrentBasePPOTrainer(abc.ABC):
 
         # Explained variance (full pass) 
         with torch.no_grad(): 
-            v_stored = torch.tensor(self.buffer.values.reshape(-1), device=self.device) 
-            r_stored = torch.tensor(self.buffer.returns.reshape(-1), device=self.device) 
-            ev = explained_variance(v_stored, r_stored) 
-            pass 
+            all_v = [] 
+            for start in range(0, num_seq, mb):
+                idx = perm[start : start + mb] if start + mb <= num_seq else torch.arange(min(start, num_seq), num_seq, device=self.device) 
+                b_obs = chunks["obs"][idx] 
+                b_critic_obs = chunks["critic_obs"][idx] 
+                b_ids = chunks["agent_ids"][idx] 
+                b_done = chunks["done_masks"][idx] 
+                b_actor_h = chunks["init_actor_h"][:, idx, :] 
+                b_actor_c = chunks["init_actor_c"][:, idx, :] 
+                b_critic_h = chunks["init_critic_h"][:, idx, :] 
+                b_critic_c = chunks["init_critic_c"][:, idx, :] 
+                b_obs_seq = b_obs.transpose(0, 1) 
+                b_critic_obs_seq = b_critic_obs.transpose(0, 1) 
+                b_done_seq = b_done.transpose(0, 1) 
+                v = self.critic_forward_chunk(
+                    b_obs_seq, b_critic_obs_seq, b_ids, b_critic_h, b_critic_c, b_done_seq
+                ) 
+                all_v.append(v.reshape(-1)) 
+            v_all = torch.cat(all_v) 
+            r_all = chunks["returns"].reshape(-1) 
+            ev = explained_variance(v_all, r_all)
+
 
         m = max(1, diag["num_minibatches"]) 
         out = {k: v/m for k, v in diag.items() if k!= "num_minibatches"}
