@@ -68,3 +68,11 @@ Thumbs.db
 # Environment variables
 .env
 .env.local
+
+# Examples 
+examples/
+marlkit/envs/simple_hetero.py 
+marlkit/envs/simple_foraging.py
+
+# TODO lists: 
+TODO.md
