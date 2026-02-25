@@ -183,6 +183,7 @@ class RecurrentMultiAgentRolloutBuffer:
         old_logp = torch.tensor(chunk_and_merge(self.logp, ()), device=dev) 
         advantages = torch.tensor(chunk_and_merge(self.advantages, ()), device=dev) 
         returns = torch.tensor(chunk_and_merge(self.returns, ()), device=dev) 
+        values = torch.tensor(chunk_and_merge(self.values, ()), device=dev)
 
         # critic_obs: (T, critic_obs_dim) - not per-agent, repeat for each agent 
         # (T, ) -> (C, L) -> repeat N -> (C * N, L, critic_obs_dim) 
@@ -195,7 +196,7 @@ class RecurrentMultiAgentRolloutBuffer:
         done_masks = torch.tensor(np.repeat(dones_chunked, N, axis=0), device=dev) 
 
         # agent_ids: for each sequence, which agent it is 
-        # Pattern: chunk0: [0, 1, ..., N-1], chunk2: [0, 1, ..., N-1], ... 
+        # Pattern: chunk0: [0, 1, ..., N-1], chunk1: [0, 1, ..., N-1], ... 
         agent_ids = torch.arange(N, device=dev, dtype=torch.long).repeat(num_chunks) 
 
         # ---- Hidden states at chunk boundaries ---- 
@@ -234,6 +235,7 @@ class RecurrentMultiAgentRolloutBuffer:
             "old_logp": old_logp,           # (num_seq, chunk_len) 
             "advantages": advantages,       # (num_seq, chunk_len) 
             "returns": returns,             # (num_seq, chunk_len) 
+            "values": values,               # (num_seq, chunk_len)
             "agent_ids": agent_ids,         # (num_seq, ) 
             "done_masks": done_masks,       # (num_seq, chunk_len) 
             "init_actor_h": init_actor_h,   # (L, num_seq, H) 

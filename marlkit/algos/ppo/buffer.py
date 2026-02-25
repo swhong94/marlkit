@@ -118,8 +118,9 @@ class MultiAgentRolloutBuffer:
         # For MAPPO, critic obs 
         critic_obs = torch.tensor(self.critic_obs, device=self.device) # (T, critic_obs_dim) 
         critic_obs_rep = critic_obs.repeat_interleave(N, dim=0) # (T * N, critic_obs_dim) 
+        values_flat = torch.tensor(self.values.reshape(T * N), device=self.device)
 
-        return obs_flat, agent_ids, actions_flat, old_logp_flat, adv_flat, ret_flat, critic_obs_rep 
+        return obs_flat, agent_ids, actions_flat, old_logp_flat, adv_flat, ret_flat, critic_obs_rep, values_flat
     
     
 

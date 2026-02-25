@@ -1,3 +1,4 @@
+import os 
 import argparse 
 import torch 
 import numpy as np
@@ -19,7 +20,25 @@ from marlkit.envs.wrappers import SuperSuitConfig, apply_supersuit_wrappers
 
 # Logger 
 from marlkit.utils.logger.logger_factory import make_logger
-import os 
+
+
+def _abbreviate_env(env_name: str) -> str:
+    """Shorten an env name for checkpoint dirs.
+
+    Examples:
+        mpe_simple_spread  -> SS_MPE
+        mpe_simple_tag     -> ST_MPE
+        simple_hetero      -> SH
+        simple_foraging    -> SF
+    """
+    prefix = ""
+    name = env_name
+    if name.startswith("mpe_"):
+        prefix = "_MPE"
+        name = name[len("mpe_"):]
+    initials = "".join(w[0] for w in name.split("_") if w).upper()
+    return f"{initials}{prefix}"
+
 
 
 @torch.no_grad() 
@@ -270,7 +289,7 @@ def parse_args():
 
     # Checkpoint Resume options 
     p.add_argument("--resume", type=str, default=None, 
-                   help="Path to checkpoint to resume from .pt file to resume from")
+                   help="Path to .pt checkpoint file to resume from")
     
     p.add_argument("--lr-schedule", choices=["constant", "linear"], default="constant", 
                    help="LR schedule: constant or linear decay to 0")
@@ -295,7 +314,12 @@ def main():
     cfg = PPOConfig() 
     cfg.seed = args.seed 
     cfg.log_every = args.log_every 
-    cfg.resume_from = args.resume 
+    cfg.resume_from = args.resume
+
+    # Default checkpoint dir: checkpoints/{algo}_{env_abbrev}
+    cfg.checkpoint_dir = os.path.join(
+        "checkpoints", f"{args.algo}_{_abbreviate_env(args.env)}"
+    ) 
 
     # Recurrent options 
     cfg.use_recurrent = args.recurrent 
@@ -382,7 +406,8 @@ def main():
         stats = trainer.update() 
         if it % cfg.checkpoint_every == 0:
             os.makedirs(cfg.checkpoint_dir, exist_ok=True)  
-            trainer.save_checkpoint(cfg.checkpoint_dir, it) 
+            ckpt_path = os.path.join(cfg.checkpoint_dir, f"ckpt_{it}.pt")
+            trainer.save_checkpoint(ckpt_path, it)
 
         if it % cfg.log_every == 0: 
 

@@ -1,7 +1,6 @@
 # marlkit/algos/ppo/recurrent_networks.py 
 
 import abc 
-import math 
 import torch 
 import torch.nn as nn 
 

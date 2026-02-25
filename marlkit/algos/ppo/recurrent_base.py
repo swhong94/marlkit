@@ -42,6 +42,8 @@ class RecurrentBasePPOTrainer(abc.ABC):
             device=cfg.device
         )
 
+        self._setup_lr_schedule()
+
     def _setup_lr_schedule(self,): 
         """Create LR schedulers based on cfg.lr_schedule."""
         if self.cfg.lr_schedule == "linear": 
@@ -250,8 +252,11 @@ class RecurrentBasePPOTrainer(abc.ABC):
             "num_minibatches": 0, 
         }
         clip_eps = self.cfg.clip_eps 
+        kl_exceeded = False 
 
-        for _ in range(self.cfg.ppo_epochs): 
+        for _ in range(self.cfg.ppo_epochs):
+            if kl_exceeded: 
+                break  
             perm = torch.randperm(num_seq, device=self.device) 
 
             for start in range(0, num_seq, mb): 
@@ -267,6 +272,7 @@ class RecurrentBasePPOTrainer(abc.ABC):
                 b_ids = chunks["agent_ids"][idx] 
                 b_critic_obs = chunks["critic_obs"][idx] 
                 b_done = chunks["done_masks"][idx] 
+                b_old_values = chunks["values"][idx]
 
                 # Initial hidden states: (num_layers, mb, hidden_dim) 
                 b_actor_h = chunks["init_actor_h"][:, idx, :] 
@@ -292,6 +298,7 @@ class RecurrentBasePPOTrainer(abc.ABC):
                 old_logp_flat = b_old_logp.reshape(-1) 
                 adv_flat = b_adv.reshape(-1) 
                 ret_flat = b_ret.reshape(-1) 
+                old_values_flat = b_old_values.reshape(-1) 
 
                 logp_diff = logp_flat - old_logp_flat 
                 ratio = torch.exp(logp_diff) 
@@ -305,7 +312,13 @@ class RecurrentBasePPOTrainer(abc.ABC):
                     b_obs_seq, b_critic_obs_seq, b_ids, b_critic_h, b_critic_c, b_done_seq
                 )
                 v_flat = v.reshape(-1) 
-                critic_loss = ((v_flat - ret_flat) ** 2).mean() 
+
+                if self.cfg.clip_value: 
+                    vf_eps = self.cfg.clip_value_eps if self.cfg.clip_value_eps is not None else self.cfg.clip_eps 
+                    v_clipped = old_values_flat + torch.clamp(v_flat - old_values_flat, -vf_eps, vf_eps) 
+                    critic_loss = torch.max((v_flat - ret_flat)**2, (v_clipped - ret_flat) ** 2).mean() 
+                else: 
+                    critic_loss = ((v_flat - ret_flat) ** 2).mean() 
 
                 loss = actor_loss + self.cfg.vf_coef * critic_loss 
 
@@ -340,6 +353,10 @@ class RecurrentBasePPOTrainer(abc.ABC):
                 diag["grad_norm_actor"] += float(gn_a) 
                 diag["grad_norm_critic"] += float(gn_c) 
                 diag["num_minibatches"] += 1 
+
+                if self.cfg.target_kl is not None and approx_kl.item() > self.cfg.target_kl: 
+                    kl_exceeded = True 
+                    break 
 
         # Explained variance (full pass) 
         with torch.no_grad(): 

@@ -11,7 +11,7 @@ class PZAdapterConfig:
     """v0 assumptions: parallel env, fixed agents, homogeneous obs/action shapes"""
     team_reward: bool = True        # If True, use sum rewards into scalar team reward 
     strict_agents: bool = True      # If True, error on changes of agent set 
-    use_action_mask: bool = True    # If True, infos contain action masks, optionally enforced 
+    use_action_mask: bool = False   # If True, infos contain action masks, optionally enforced 
 
 
 
@@ -70,6 +70,10 @@ class PettingZooParallelAdapter:
         obs_np = self._obs_dict_to_array(obs_dict) 
         critic_obs = self._make_critic_obs(obs_np) 
 
+        # Store action masks if available 
+        if self.cfg.use_action_mask: 
+            self._last_action_mask = self._extract_action_masks(info_dict) 
+
         return obs_np, critic_obs 
     
     def step(self, actions: np.ndarray) -> Tuple[np.ndarray, np.ndarray, float, bool, Dict]: 
@@ -105,6 +109,8 @@ class PettingZooParallelAdapter:
             "truncated_all": truncated_all, 
             "info_dict": info_dict,
         }
+        if self.cfg.use_action_mask: 
+            info["action_mask"] = self._extract_action_masks(info_dict) 
 
         return obs_np, critic_obs, reward, done, info 
     
@@ -133,5 +139,17 @@ class PettingZooParallelAdapter:
     
     def _make_critic_obs(self, obs_np: np.ndarray) -> np.ndarray: 
         return obs_np.reshape(-1).astype(np.float32) 
+    
+    # Helper method for action mask 
+    def _extract_action_masks(self, info_dict: Dict[str, Any]) -> np.ndarray: 
+        """Extract per-agent action masks into (N, action_dim) array. 
+        Returns all-ones if masks aren't present."""
+        masks = np.ones((self.num_agents, self.action_dim), dtype=np.float32) 
+        for i, a in enumerate(self.agents): 
+            agent_info = info_dict.get(a, {}) 
+            if isinstance(agent_info, dict) and "action_mask" in agent_info: 
+                masks[i] = np.asarray(agent_info["action_mask"], dtype=np.float32)
+        return masks 
+    
     
 

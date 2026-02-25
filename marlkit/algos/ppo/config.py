@@ -1,3 +1,4 @@
+from __future__ import annotations 
 from dataclasses import dataclass 
 
 @dataclass 
@@ -12,6 +13,9 @@ class PPOConfig:
 
     # PPO 
     clip_eps: float = 0.2 
+    clip_value: bool = False 
+    clip_value_eps: float | None = None 
+    target_kl: float | None = None 
     ent_coef: float = 0.01 
     vf_coef: float = 0.5 
     max_grad_norm: float = 0.5 
@@ -22,6 +26,7 @@ class PPOConfig:
     actor_lr: float = 3e-4 
     critic_lr: float = 3e-4 
     weight_decay: float = 0.0 
+    lr_schedule: str = "constant" # "constant", "linear" (decay to 0) 
 
     # NETS 
     hidden_dim: int = 128 
@@ -54,14 +59,8 @@ class PPOConfig:
 
     # Checkpointing 
     checkpoint_dir: str = "checkpoints" 
-    checkpoint_every: int = 50 
+    checkpoint_every: int = 5 
     resume_from: str | None = None 
 
-    # Optimization 
-    actor_lr: float = 3e-4 
-    critic_lr: float = 3e-4 
-    weight_decay: float = 0.0 
-    lr_schedule: str = "constant" # "constant", "linear" (decay to 0) 
-    
-    
-     
+ 
+

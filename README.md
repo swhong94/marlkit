@@ -19,35 +19,44 @@ A minimal, from-scratch PyTorch toolkit for multi-agent reinforcement learning (
 ## Repository Structure
 
 ```
-marlkit/
-├── __init__.py
-├── train.py                        # Main entry point (CLI with argparse)
-├── train_mappo.py                  # Standalone MAPPO training script (no CLI)
+├── train.py                            # Main entry point (CLI with argparse)
 │
 ├── marlkit/
 │   ├── algos/
-│   │   ├── ppo/                    # Shared PPO engine (used by MAPPO & IPPO)
-│   │   │   ├── base.py            # BasePPOTrainer — rollout collection, PPO update loop
-│   │   │   ├── buffer.py          # MultiAgentRolloutBuffer — stores (T, N, ...) rollouts, GAE
-│   │   │   └── networks.py        # SharedActor, SharedCritic, CentralCritic, MLP
+│   │   ├── ppo/                        # Shared PPO engine (used by MAPPO & IPPO)
+│   │   │   ├── config.py              # PPOConfig dataclass (all hyperparameters)
+│   │   │   ├── base.py               # BasePPOTrainer — MLP rollout collection, PPO update
+│   │   │   ├── recurrent_base.py     # RecurrentBasePPOTrainer — hidden-state mgmt, chunk BPTT
+│   │   │   ├── buffer.py             # MultiAgentRolloutBuffer — (T, N, ...) rollouts, GAE
+│   │   │   ├── recurrent_buffer.py   # RecurrentMultiAgentRolloutBuffer — + hidden states, chunks
+│   │   │   ├── networks.py           # SharedActor, SharedCritic, CentralCritic, MLP
+│   │   │   └── recurrent_networks.py # GRU/LSTM/Transformer backbones, recurrent actor & critics
 │   │   │
-│   │   ├── mappo/                  # MAPPO-specific code
-│   │   │   ├── config.py          # MAPPOConfig dataclass (all hyperparameters)
-│   │   │   └── trainer.py         # MAPPOTrainer — thin subclass of BasePPOTrainer
+│   │   ├── mappo/                      # MAPPO-specific (centralized critic)
+│   │   │   ├── trainer.py            # MAPPOTrainer (BasePPOTrainer subclass)
+│   │   │   └── recurrent_trainer.py  # RecurrentMAPPOTrainer
 │   │   │
-│   │   └── ippo/                   # IPPO-specific code
-│   │       └── trainer.py         # IPPOTrainer — thin subclass of BasePPOTrainer
+│   │   └── ippo/                       # IPPO-specific (decentralized critic)
+│   │       ├── trainer.py            # IPPOTrainer (BasePPOTrainer subclass)
+│   │       └── recurrent_trainer.py  # RecurrentIPPOTrainer
 │   │
 │   ├── envs/
-│   │   ├── simple_spread.py       # Toy SimpleSpread env (no external deps)
-│   │   ├── pettingzoo_adapter.py  # Adapter wrapping PettingZoo parallel envs
-│   │   └── mpe_factory.py         # Factory to create MPE simple_spread_v3
+│   │   ├── registry.py               # Centralized env registry (register_env, make_env)
+│   │   ├── simple_spread.py          # Toy SimpleSpread env (no external deps)
+│   │   ├── simple_hetero.py          # Heterogeneous scout/worker cooperative env
+│   │   ├── simple_foraging.py        # Grid-based cooperative foraging env
+│   │   ├── pettingzoo_adapter.py     # Adapter wrapping PettingZoo parallel envs
+│   │   ├── mpe_factory.py            # Factory for all MPE environments
+│   │   └── wrappers.py               # SuperSuit wrappers (pad, normalize, frame-stack)
+│   │
+│   ├── examples/
+│   │   └── custom_env_example.py     # How to register a custom env
 │   │
 │   └── utils/
-│       ├── torch_utils.py         # set_seed(), explained_variance()
+│       ├── torch_utils.py            # set_seed(), explained_variance()
 │       └── logger/
-│           ├── base_logger.py     # Abstract BaseLogger interface
-│           ├── logger_factory.py  # make_logger("tensorboard"|"wandb", ...)
+│           ├── base_logger.py        # Abstract BaseLogger interface
+│           ├── logger_factory.py     # make_logger("tensorboard"|"wandb", ...)
 │           ├── tensorboard_logger.py
 │           └── wandb_logger.py
 ```
@@ -123,34 +132,32 @@ Implements the three abstract hooks for decentralized training:
 - `critic_last_values`: Same as above for bootstrapping.
 - `critic_forward_minibatch`: Forward pass on `(b_obs, b_ids)`.
 
-#### 1.6 `mappo/config.py` — `MAPPOConfig`
+#### 1.6 Recurrent variants
 
-A `@dataclass` holding all hyperparameters (used by both MAPPO and IPPO):
+Both MAPPO and IPPO have **recurrent counterparts** that subclass `RecurrentBasePPOTrainer` instead of `BasePPOTrainer`:
 
-```python
-@dataclass
-class MAPPOConfig:
-    num_agents: int = 5
-    obs_dim: int = 2
-    action_dim: int = 5
-    rollout_steps: int = 256
-    gamma: float = 0.99
-    gae_lambda: float = 0.95
-    clip_eps: float = 0.2
-    ent_coef: float = 0.01
-    vf_coef: float = 0.5
-    max_grad_norm: float = 0.5
-    ppo_epochs: int = 4
-    minibatch_size: int = 256
-    actor_lr: float = 3e-4
-    critic_lr: float = 3e-4
-    weight_decay: float = 0.0
-    hidden_dim: int = 128
-    id_embed_dim: int = 16
-    device: str = 'cpu'
-    seed: int = 0
-    log_every: int = 10
-```
+- **`RecurrentMAPPOTrainer`** — centralized critic with a single hidden state (`critic_batch=1`), value replicated across agents.
+- **`RecurrentIPPOTrainer`** — decentralized critic with per-agent hidden states (`critic_batch=N`).
+
+These add a `critic_forward_chunk` hook for chunk-based BPTT training, and use `RecurrentMultiAgentRolloutBuffer` which stores actor/critic hidden states at each timestep and splits rollouts into sequential chunks via `get_chunks(chunk_len)`.
+
+Recurrent network backbones (GRU, LSTM, Transformer) are built via `build_backbone()` in `recurrent_networks.py`. The Transformer variant uses a causal-masked encoder with a sliding context window as "hidden state".
+
+#### 1.7 `ppo/config.py` — `PPOConfig`
+
+A `@dataclass` holding all hyperparameters (used by both MAPPO and IPPO, MLP and recurrent):
+
+| Section | Key fields |
+|---|---|
+| **Rollout** | `num_agents`, `obs_dim`, `action_dim`, `rollout_steps`, `gamma`, `gae_lambda` |
+| **PPO** | `clip_eps`, `clip_value`, `clip_value_eps`, `target_kl`, `ent_coef`, `vf_coef`, `max_grad_norm`, `ppo_epochs`, `minibatch_size` |
+| **Optimization** | `actor_lr`, `critic_lr`, `weight_decay`, `lr_schedule` (`"constant"` or `"linear"`) |
+| **Networks** | `hidden_dim`, `id_embed_dim` |
+| **Recurrent** | `use_recurrent`, `recurrent_type` (`"gru"`, `"lstm"`, `"transformer"`), `recurrent_hidden_dim`, `recurrent_num_layers`, `chunk_len`, `transformer_nhead`, `transformer_context_len` |
+| **Runtime** | `device`, `seed` |
+| **Logging** | `log_every`, `logger_type` (`"none"`, `"wandb"`, `"tensorboard"`), `wandb_project` |
+| **Evaluation** | `eval_episodes`, `eval_episodes_det` |
+| **Checkpointing** | `checkpoint_dir`, `checkpoint_every`, `resume_from` |
 
 ---
 
@@ -170,7 +177,28 @@ Where:
 - `reward`: scalar float (shared team reward)
 - `done`: bool (shared termination signal)
 
-#### 2.1 `simple_spread.py` — `SimpleSpreadParallelEnv`
+#### 2.1 `registry.py` — Environment Registry
+
+All environments are registered via `register_env(name, factory_fn)` and created via `make_env(name, **kwargs)`. Available environments:
+
+| Name | Source | Dependencies |
+|---|---|---|
+| `toy_simple_spread` | Built-in `SimpleSpreadParallelEnv` | None |
+| `mpe_simple_spread` | PettingZoo `simple_spread_v3` | `pettingzoo[mpe]` or `mpe2` |
+| `mpe_simple_reference` | PettingZoo `simple_reference_v3` | " |
+| `mpe_simple_crypto` | PettingZoo `simple_crypto_v3` | " |
+| `mpe_simple_world_comm` | PettingZoo `simple_world_comm_v3` | " |
+| `mpe_simple_push` | PettingZoo `simple_push_v3` | " |
+| `mpe_simple_adversary` | PettingZoo `simple_adversary_v3` | " |
+| `mpe_simple_tag` | PettingZoo `simple_tag_v3` | " |
+| `simple_hetero` | Built-in heterogeneous scout/worker env | None |
+| `simple_hetero_pz` | PettingZoo wrapper of `simple_hetero` | None |
+| `simple_foraging` | Built-in grid foraging env | None |
+| `simple_foraging_pz` | PettingZoo wrapper of `simple_foraging` | None |
+
+Custom PettingZoo envs can be registered in one call via `register_pettingzoo_env(name, pz_env_fn)`, or at the CLI with `--pz-env mypackage.my_env:parallel_env`.
+
+#### 2.2 `simple_spread.py` — `SimpleSpreadParallelEnv`
 
 A **dependency-free** toy cooperative environment:
 
@@ -181,7 +209,25 @@ A **dependency-free** toy cooperative environment:
 
 Configuration via `SimpleSpreadEnvConfig(num_agents, episode_len, collision_penalty, coverage_reward)`.
 
-#### 2.2 `pettingzoo_adapter.py` — `PettingZooParallelAdapter`
+#### 2.3 `simple_hetero.py` — Heterogeneous Cooperative Env
+
+Two agent types (scouts and workers) cooperate. Scouts observe a noisy hint about a hidden target and broadcast a signal; workers observe the previous mean scout signal and select a task. Reward = correct worker matches − mismatch penalties.
+
+- `SimpleHeteroEnv` — direct toolkit env (pads obs/actions to max dims across agent types).
+- `SimpleHeteroPZEnv` — PettingZoo parallel env with heterogeneous obs/action spaces.
+
+Configuration via `SimpleHeteroConfig(num_scouts, num_workers, episode_len, ...)`.
+
+#### 2.4 `simple_foraging.py` — Grid Foraging Env
+
+`N` identical agents on a discrete grid cooperate to collect food items. obs\_dim=6, action\_dim=5 (stay, up, down, left, right). Team-shared reward with collect bonus, step penalty, and completion bonus.
+
+- `SimpleForagingEnv` — direct toolkit env.
+- `SimpleForagingPZEnv` — PettingZoo parallel env.
+
+Configuration via `SimpleForagingConfig(num_agents, grid_size, num_food, episode_len, ...)`.
+
+#### 2.5 `pettingzoo_adapter.py` — `PettingZooParallelAdapter`
 
 Wraps any PettingZoo **parallel** environment to match the toolkit's array-based interface:
 
@@ -189,17 +235,27 @@ Wraps any PettingZoo **parallel** environment to match the toolkit's array-based
 - Aggregates per-agent rewards into a scalar team reward (sum or mean, via `team_reward` config).
 - Merges per-agent `terminated`/`truncated` dicts into a single `done` bool.
 - Infers `obs_dim` and `action_dim` from the first reset (supports discrete actions only).
+- Extracts per-agent action masks from `info_dict` when `use_action_mask=True`.
 - Validates that the agent set does not change mid-episode (`strict_agents=True`).
 
 Configuration via `PZAdapterConfig(team_reward, strict_agents, use_action_mask)`.
 
-#### 2.3 `mpe_factory.py` — `make_mpe_simple_spread()`
+#### 2.6 `mpe_factory.py` — MPE Environment Factory
 
-Factory function that creates a PettingZoo MPE `simple_spread_v3` parallel environment. Tries `pettingzoo.mpe` first, falls back to the `mpe2` package.
+`make_mpe_env(module_name, cfg)` creates any supported PettingZoo MPE environment. Dispatches env-specific kwargs (e.g., `N` and `local_ratio` for spread, `num_good`/`num_adversaries`/`num_obstacles` for tag). Tries `pettingzoo.mpe` first, falls back to `mpe2`.
 
-```python
-make_mpe_simple_spread(num_agents=3, max_cycles=25, continuous_actions=False)
-```
+Configuration via `MPEConfig(max_cycles, continuous_actions, N, local_ratio, num_good, num_adversaries, num_obstacles)`.
+
+#### 2.7 `wrappers.py` — SuperSuit Wrappers
+
+`apply_supersuit_wrappers(pz_env, cfg)` applies optional PettingZoo preprocessing:
+
+- Observation padding (`pad_observations_v0`)
+- Action space padding (`pad_action_space_v0`)
+- Observation normalization (`normalize_obs_v0`)
+- Frame stacking (`frame_stack_v1`)
+
+Configuration via `SuperSuitConfig(enabled, pad_observations, pad_action_space, normalize_obs, frame_stack)`.
 
 ---
 
@@ -304,6 +360,18 @@ python train.py --algo mappo --env mpe_simple_spread --num-agents 3 --iter 500
 # IPPO on the toy environment (5 agents)
 python train.py --algo ippo --env toy_simple_spread --num-agents 5 --iter 500
 
+# Recurrent MAPPO with GRU
+python train.py --algo mappo --env mpe_simple_spread --recurrent --recurrent-type gru
+
+# With WandB logging and linear LR decay
+python train.py --algo mappo --env mpe_simple_spread --logger wandb --lr-schedule linear
+
+# Resume from checkpoint
+python train.py --algo mappo --env mpe_simple_spread --resume checkpoints/mappo_SS_MPE/ckpt_100.pt
+
+# Custom PettingZoo env
+python train.py --pz-env mypackage.my_env:parallel_env --env my_env_name
+
 # All CLI options:
 python train.py --help
 ```
@@ -312,35 +380,58 @@ python train.py --help
 
 | Flag | Default | Description |
 |---|---|---|
+| **Core** | | |
 | `--algo` | `mappo` | Algorithm: `mappo` or `ippo` |
-| `--env` | `mpe_simple_spread` | Environment: `toy_simple_spread` or `mpe_simple_spread` |
+| `--env` | `mpe_simple_spread` | Environment name (see registry table above) |
 | `--num-agents` | `3` | Number of agents |
 | `--seed` | `0` | Random seed |
 | `--iter` | `500` | Number of training iterations |
-| `--max-cycles` | `25` | Max episode length (MPE only) |
-| `--log-every` | `10` | Print metrics every N iterations |
-
-### Standalone scripts
-
-```bash
-# MAPPO with PettingZoo MPE (hardcoded settings)
-python train_mappo.py
-
-```
+| `--max-cycles` | `25` | Max episode length |
+| `--log-every` | `10` | Print & eval frequency (in iterations) |
+| **Recurrent** | | |
+| `--recurrent` | `False` | Use recurrent networks |
+| `--recurrent-type` | `gru` | `gru`, `lstm`, or `transformer` |
+| `--recurrent-hidden-dim` | `64` | Recurrent hidden size |
+| `--recurrent-num-layers` | `1` | Number of recurrent layers |
+| `--chunk-len` | `16` | BPTT chunk length |
+| **Logging** | | |
+| `--logger` | `none` | `none`, `wandb`, or `tensorboard` |
+| `--wandb-project` | `marlkit` | WandB project name |
+| `--run-name` | auto | Run name (auto: `{algo}_{env}_s{seed}`) |
+| **Checkpointing** | | |
+| `--resume` | `None` | Path to `.pt` checkpoint to resume from |
+| **Optimization** | | |
+| `--lr-schedule` | `constant` | `constant` or `linear` (decay to 0) |
+| **MPE-specific** | | |
+| `--local-ratio` | `0.5` | Local reward ratio (simple\_spread) |
+| `--num-good` | `1` | Good agents (simple\_tag) |
+| `--num-adversaries` | `3` | Adversaries (simple\_tag) |
+| `--num-obstacles` | `2` | Obstacles (simple\_tag) |
+| **SuperSuit** | | |
+| `--supersuit` | `False` | Enable SuperSuit wrappers |
+| `--pad-obs` | `False` | Pad observations |
+| `--pad-act` | `False` | Pad action space |
+| `--norm-obs` | `False` | Normalize observations |
+| `--frame-stack` | `1` | Frame stack depth (1 = disabled) |
+| **Custom env** | | |
+| `--pz-env` | `None` | Import path for a custom PZ parallel env (e.g. `mypackage.my_env:parallel_env`) |
 
 ### Expected output
 
 Every `log_every` iterations, the script prints:
 
 ```
-[mpe_simple_spread] | mappo it=0010]   eval_ep_reward=  -45.23  running=  -42.10  EV=0.032
-[mpe_simple_spread] | mappo it=0020]   eval_ep_reward=  -38.77  running=  -39.45  EV=0.241
-...
+[mpe_simple_spread | mappo | Iter 10] eval_return=-45.23 ± 3.41    |eval_len=25.0    |greedy return=-42.10 ± 2.87  |EV=0.032
+EV=0.032 KL=0.0051 clip=0.08 H=1.59 Ratio=1.002±0.041 Vloss=12.341 Aloss=-0.003
 ```
 
-- **`eval_ep_reward`** — Greedy evaluation episode return (argmax actions).
-- **`running`** — Exponentially smoothed return (α=0.1).
-- **`EV`** — Explained variance of the critic (closer to 1.0 is better).
+- **`eval_return`** — Stochastic evaluation return (sampled actions), mean ± std.
+- **`greedy return`** — Deterministic evaluation return (argmax actions).
+- **`EV`** — Explained variance of the critic (1.0 = perfect, 0.0 = no better than mean).
+- **`KL`** — Approximate KL divergence between old and new policy.
+- **`clip`** — Fraction of samples clipped by the PPO objective.
+- **`H`** — Policy entropy.
+- **`Vloss / Aloss`** — Critic and actor losses.
 
 ---
 
@@ -348,29 +439,36 @@ Every `log_every` iterations, the script prints:
 
 Each iteration:
 
-1. **Rollout**: Run the current shared policy for `rollout_steps` (256) timesteps, collecting `(obs, action, logp, reward, done, value)` into the buffer.
-2. **GAE**: Compute advantages and returns using Generalized Advantage Estimation with `gamma=0.99`, `lambda=0.95`.
-3. **PPO Update**: Flatten the buffer to `T * N` samples. For `ppo_epochs` (4) epochs, shuffle and iterate in minibatches of size `minibatch_size` (256), computing:
+1. **Rollout**: Run the current shared policy for `rollout_steps` (256) timesteps, collecting `(obs, action, logp, reward, terminated, truncated, value)` into the buffer. For recurrent models, hidden states are stored and reset on episode boundaries.
+2. **GAE**: Compute advantages and returns using Generalized Advantage Estimation with `gamma=0.99`, `lambda=0.95`. Supports truncation bootstrapping.
+3. **PPO Update**: For MLP models, flatten the buffer to `T × N` samples and iterate in shuffled minibatches. For recurrent models, split into sequential chunks of length `chunk_len` for BPTT. Both use:
    - Clipped actor loss + entropy bonus
-   - MSE critic loss
-   - Combined gradient step with gradient clipping
-4. **Eval**: Run one greedy episode (argmax of the policy) and log the return.
+   - MSE critic loss (optionally clipped)
+   - Separate actor/critic optimizers with gradient clipping
+   - Optional KL early stopping (`target_kl`)
+4. **Eval**: Every `log_every` iterations, run stochastic and deterministic (greedy) evaluation episodes (`eval_episodes` / `eval_episodes_det`).
+5. **Checkpoint**: Every `checkpoint_every` iterations, save model to `checkpoints/{algo}_{env_abbrev}/ckpt_{iter}.pt`.
 
 ---
 
 ## Extending the Toolkit
 
-### Adding a new algorithm
+### Adding a new algorithm (PPO-based)
 
 1. Create `marlkit/algos/<your_algo>/trainer.py`.
-2. Subclass `BasePPOTrainer` and implement the three hooks: `critic_values_from_step`, `critic_last_values`, `critic_forward_minibatch`.
-3. Add the appropriate critic network to `ppo/networks.py` (or import your own).
+2. Subclass `BasePPOTrainer` (MLP) or `RecurrentBasePPOTrainer` (recurrent) and implement the abstract hooks:
+   - MLP: `critic_values_from_step`, `critic_last_values`, `critic_forward_minibatch`
+   - Recurrent: the above plus `critic_forward_chunk` and the `critic_batch` property
+3. Add the appropriate critic network to `ppo/networks.py` or `ppo/recurrent_networks.py` (or import your own).
 4. Register it in `train.py`'s `build_trainer()` function.
 
 ### Adding a new environment
 
-1. Either implement the env interface directly (see contract above) or use `PettingZooParallelAdapter` for any PettingZoo parallel env.
-2. Register it in `train.py`'s `build_env()` function.
+1. Implement the env interface directly (see contract above), **or** wrap a PettingZoo parallel env with `PettingZooParallelAdapter`.
+2. Create a factory function: `factory(num_agents, seed, max_cycles, **kwargs) -> (env, obs_dim, action_dim, num_agents)`.
+3. Register it via `register_env("my_env", factory)` in `marlkit/envs/registry.py`, or dynamically at the CLI with `--pz-env`.
+
+See `marlkit/examples/custom_env_example.py` for a complete working example.
 
 ---
 

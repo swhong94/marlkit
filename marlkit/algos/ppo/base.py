@@ -26,7 +26,6 @@ class BasePPOTrainer(abc.ABC):
         self.actor_opt = Adam(self.actor.parameters(), lr=cfg.actor_lr, weight_decay=cfg.weight_decay)
         self.critic_opt = Adam(self.critic.parameters(), lr=cfg.critic_lr, weight_decay=cfg.weight_decay) 
 
-        self._setup_lr_schedule() 
 
         self.buffer = MultiAgentRolloutBuffer(
             T=cfg.rollout_steps, 
@@ -36,6 +35,8 @@ class BasePPOTrainer(abc.ABC):
             device=cfg.device 
         )
     
+        self._setup_lr_schedule() 
+        
     def _setup_lr_schedule(self,): 
         """Create LR schedulers based on cfg.lr_schedule."""
         if self.cfg.lr_schedule == "linear": 
@@ -180,7 +181,7 @@ class BasePPOTrainer(abc.ABC):
         self.buffer.compute_gae(last_vals, self.cfg.gamma, self.cfg.gae_lambda, bootstrap_on_truncation=True) 
     
     def update(self, ): 
-        obs_flat, agent_ids, actions_flat, old_logp_flat, adv_flat, ret_flat, critic_obs_rep = self.buffer.get_flat() 
+        obs_flat, agent_ids, actions_flat, old_logp_flat, adv_flat, ret_flat, critic_obs_rep, values_flat = self.buffer.get_flat() 
         total = obs_flat.shape[0] 
         mb = self.cfg.minibatch_size 
         assert mb <= total, "minibatch_size must be <= T * N"
@@ -201,8 +202,11 @@ class BasePPOTrainer(abc.ABC):
         }
 
         clip_eps = self.cfg.clip_eps 
+        kl_exceeded = False 
 
         for _ in range(self.cfg.ppo_epochs): 
+            if kl_exceeded: 
+                break 
             perm = torch.randperm(total, device=self.device) 
             for start in range(0, total, mb): 
                 batch = perm[start:start+mb]
@@ -213,6 +217,7 @@ class BasePPOTrainer(abc.ABC):
                 b_old_logp = old_logp_flat[batch] 
                 b_adv = adv_flat[batch] 
                 b_ret = ret_flat[batch] 
+                b_old_values = values_flat[batch]
 
                 # ---- Actor loss ---- 
                 dist = self.actor.dist(b_obs, b_ids) 
@@ -233,7 +238,13 @@ class BasePPOTrainer(abc.ABC):
                 v = self.critic_forward_minibatch(
                     b_obs, b_ids, b_critic_obs
                 )
-                critic_loss = ((v - b_ret)**2).mean()
+                # Clipped value loss
+                if self.cfg.clip_value: 
+                    vf_eps = self.cfg.clip_value_eps if self.cfg.clip_value_eps is not None else self.cfg.clip_eps 
+                    v_clipped = b_old_values + torch.clamp(v - b_old_values, -vf_eps, vf_eps) 
+                    critic_loss = torch.max((v - b_ret) ** 2, (v_clipped - b_ret) ** 2).mean() 
+                else:
+                    critic_loss = ((v - b_ret)**2).mean()
 
                 loss = actor_loss + self.cfg.vf_coef * critic_loss 
 
@@ -247,7 +258,6 @@ class BasePPOTrainer(abc.ABC):
 
                     ratio_mean = ratio.mean() 
                     ratio_std = ratio.std(unbiased=False) 
-
 
                 # ---- Update step ---- 
                 self.actor_opt.zero_grad() 
@@ -273,6 +283,11 @@ class BasePPOTrainer(abc.ABC):
                 diag['grad_norm_actor'] += float(gn_a)
                 diag['grad_norm_critic'] += float(gn_c)
                 diag['num_minibatches'] += 1
+
+                if self.cfg.target_kl is not None and approx_kl.item() > self.cfg.target_kl: 
+                    kl_exceeded = True 
+                    break 
+                
 
 
         # Diagnostics (Explained Variance) 
