@@ -15,14 +15,6 @@ def explained_variance(y_pred: torch.Tensor, y_true: torch.Tensor) -> float:
         return float('nan') 
     return (1.0 - torch.var(y_true - y_pred) / var_y).item() 
 
-def grad_norm(parameters,) -> float: 
-    total = 0.0 
-    for p in parameters: 
-        if p.grad is None: 
-            continue 
-        param_norm = p.grad.data.norm(2) 
-        total += param_norm.item() ** 2
-    return float(total ** 0.5) 
 
 
 
