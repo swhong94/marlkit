@@ -2,10 +2,7 @@ import argparse
 import torch 
 import numpy as np
 
-from marlkit.algos.mappo.config import MAPPOConfig 
-from marlkit.envs.simple_spread import SimpleSpreadParallelEnv, SimpleSpreadEnvConfig
-from marlkit.envs.pettingzoo_adapter import PettingZooParallelAdapter, PZAdapterConfig
-from marlkit.envs.mpe_factory import make_mpe_simple_spread 
+from marlkit.algos.ppo.config import PPOConfig
 from marlkit.utils.torch_utils import set_seed 
 
 from marlkit.algos.ppo.networks import SharedActor, CentralCritic, SharedCritic 
@@ -22,6 +19,7 @@ from marlkit.envs.wrappers import SuperSuitConfig, apply_supersuit_wrappers
 
 # Logger 
 from marlkit.utils.logger.logger_factory import make_logger
+import os 
 
 
 @torch.no_grad() 
@@ -69,7 +67,10 @@ def evaluate_policy(env,
                 dist = actor.dist(obs_t, ids) 
 
             if deterministic: 
-                act = dist.probs.argmax(dim=-1) 
+                if hasattr(dist, 'probs'): 
+                    act = dist.probs.argmax(dim=-1)     # Categorical
+                else:
+                    act = dist.mean                     # Normal / Continuous 
             else:
                 act = dist.sample() 
 
@@ -113,43 +114,30 @@ def evaluate_policy(env,
 def build_env(env_name: str, 
               num_agents: int, 
               seed: int, 
-              max_cycles: int,
-              ss_cfg: SuperSuitConfig = None): 
-    """  
-    Returns (env, obs_dim, action_dim, num_agents_actual)
+              max_cycles: int, 
+              ss_cfg: "SuperSuitConfig | None" = None, 
+              **env_kwargs): 
+    """
+    Returns (env, obs_dim, action_dim, num_agents_actual) 
     
     env follows our toolkit env interface 
+    
         reset(seed) -> (obs_np, critic_obs_np) 
-        step(action_np) -> (obs_np, critic_obs_np, reward, done, info))
+        step(action_np) -> (obs_np, critic_obs_np, reward, done, info) 
     """
-    if env_name == 'toy_simple_spread': 
-        env = SimpleSpreadParallelEnv(SimpleSpreadEnvConfig(num_agents=num_agents)) 
-        obs_dim = env.obs_dim 
-        action_dim = env.action_dim 
-        n_actual = env.num_agents 
-        return env, obs_dim, action_dim, n_actual 
-    
-    if env_name == 'mpe_simple_spread': 
-        pz_env = make_mpe_simple_spread(num_agents=num_agents, max_cycles=max_cycles, continuous_actions=False) 
+    from marlkit.envs.registry import make_env 
 
-        if ss_cfg is not None and ss_cfg.enabled: 
-            pz_env = apply_supersuit_wrappers(pz_env, ss_cfg) 
-
-        env = PettingZooParallelAdapter(pz_parallel_env=pz_env, cfg=PZAdapterConfig(team_reward=True))
-
-        # IMPORTANT: reset once to set obs/action dims when using PettingZoo 
-        _ = env.reset(seed=seed) 
-
-        obs_dim = env.obs_dim 
-        action_dim = env.action_dim 
-        n_actual = env.num_agents 
-
-        return env, obs_dim, action_dim, n_actual 
-    
-    raise ValueError(f"Unknown env {env_name}. Supported ones: toy_simple_spread, mpe_simple_spread")
+    return make_env(
+        env_name, 
+        num_agents=num_agents, 
+        seed=seed, 
+        max_cycles=max_cycles, 
+        ss_cfg=ss_cfg, 
+        **env_kwargs, 
+    )
 
 
-def build_trainer(algo: str, env, cfg: MAPPOConfig): 
+def build_trainer(algo: str, env, cfg: PPOConfig): 
     if cfg.use_recurrent: 
         return _build_recurrent_trainer(algo, env, cfg) 
     return _build_mlp_trainer(algo, env, cfg) 
@@ -244,7 +232,7 @@ def parse_args():
     p = argparse.ArgumentParser() 
 
     p.add_argument('--algo', choices=['mappo', 'ippo'], default='mappo', help='Training algorithm')
-    p.add_argument('--env', choices=['toy_simple_spread', 'mpe_simple_spread'], default='mpe_simple_spread', help='Environment name') 
+    p.add_argument('--env', default='mpe_simple_spread', help='Environment name') 
     p.add_argument('--num-agents', type=int, default=3, help='Number of participating agents') 
     p.add_argument('--seed', type=int, default=0) 
     p.add_argument('--iter', type=int, default=500) 
@@ -255,6 +243,18 @@ def parse_args():
     p.add_argument('--pad-act', action='store_true', help='Supersuit: pad actions') 
     p.add_argument('--norm-obs', action='store_true', help='Supersuit: normalize observations') 
     p.add_argument('--frame-stack', type=int, default=1, help='Supersuit: framestack K (K > 1)')
+
+    # MPE-specific options 
+    p.add_argument('--local-ratio', type=float, default=0.5, help='MPE: local ratio (simple_spread)')
+    p.add_argument('--num-good', type=int, default=1, help="MPE: number of good agents (simple_tag)") 
+    p.add_argument('--num-adversaries', type=int, default=3, help="MPE: number of adversary agents (simple_tag)")
+    p.add_argument('--num-obstacles', type=int, default=2, help="MPE: number of obstacles (simple_tag)")
+
+    # Custom PettingZoo environment 
+    p.add_argument('--pz-env', type=str, default=None, 
+                   help="Import path for a custom PettingZoo parallel env," 
+                        "e.g., 'mypackag.my_env:parallel_env'. "
+                        "Overrides --env with the registered name.")
 
     # Recurrent options 
     p.add_argument("--recurrent", action='store_true', help="Use recurrent networks") 
@@ -267,6 +267,10 @@ def parse_args():
     p.add_argument("--logger", choices=["none", "wandb", "tensorboard"], default="none", help="Logger backend")
     p.add_argument("--wandb-project", type=str, default="marlkit", help="WandB project name")
     p.add_argument("--run-name", type=str, default=None, help="Run name for logger (auto-generated if omitted)")
+
+    # Checkpoint Resume options 
+    p.add_argument("--resume", type=str, default=None, 
+                   help="Path to checkpoint to resume from .pt file to resume from")
 
     return p.parse_args() 
 
@@ -284,9 +288,10 @@ def main():
             frame_stack=args.frame_stack
         )
 
-    cfg = MAPPOConfig() 
+    cfg = PPOConfig() 
     cfg.seed = args.seed 
     cfg.log_every = args.log_every 
+    cfg.resume_from = args.resume 
 
     # Recurrent options 
     cfg.use_recurrent = args.recurrent 
@@ -303,12 +308,37 @@ def main():
 
     set_seed(cfg.seed) 
 
+    # If user passed --pz-env, dynamically import and register it 
+    if args.pz_env is not None: 
+        import importlib 
+        from marlkit.envs.registry import register_pettingzoo_env
+
+        # Parse "module.path:callable_name" 
+        if ":" not in args.pz_env: 
+            raise ValueError(
+                f"--pz-env must be 'module.path:callable', got '{args.pz_env}'"
+            )
+        mod_path, fn_name = args.pz_env.rsplit(':', 1) 
+        mod = importlib.import_module(mod_path) 
+        pz_env_fn = getattr(mod, fn_name) 
+
+        # Register under the --env name (default to the callable name) 
+        env_name = args.env if args.env != 'mpe_simple_spread' else fn_name 
+        args.env = env_name 
+        register_pettingzoo_env(env_name, pz_env_fn) 
+
+
     env, obs_dim, action_dim, n_actual = build_env(
         env_name=args.env, 
         num_agents=args.num_agents, 
         seed=cfg.seed, 
-        max_cycles=args.max_cycles,
-        ss_cfg=ss_cfg 
+        max_cycles=args.max_cycles, 
+        ss_cfg=ss_cfg, 
+        # MPE-speicific (ignored by non-MPE envs via **_kw
+        local_ratio=args.local_ratio, 
+        num_good=args.num_good, 
+        num_adversaries=args.num_adversaries, 
+        num_obstacles=args.num_obstacles
     )
 
     if args.env.startswith('mpe_'): 
@@ -334,40 +364,45 @@ def main():
         )
 
     trainer, actor = build_trainer(algo=args.algo, env=env, cfg=cfg)
+    
+    start_iter = trainer.load_checkpoint(cfg.resume_from) if cfg.resume_from else 0
 
-    running = 0.0 
-    for it in range(1, args.iter + 1): 
+    for it in range(start_iter + 1, args.iter + 1): 
         trainer.collect_rollouts(seed=cfg.seed + it) 
         stats = trainer.update() 
-
-        # Eval episodes 
-        eval_stats = evaluate_policy(
-            env = env, 
-            actor = actor, 
-            device = cfg.device, 
-            num_agents = cfg.num_agents, 
-            episodes = 10, 
-            seed = cfg.seed + 10_000 + it * 100, 
-            deterministic=False, 
-            use_per_agent_rewards=getattr(cfg, 'use_per_agent_rewards', False),
-            recurrent=cfg.use_recurrent 
-        )
-
-        # Optional deterministic (argmax) evaluation too 
-        eval_stats_det = evaluate_policy(
-            env=env, 
-            actor=actor, 
-            device=cfg.device, 
-            num_agents=cfg.num_agents, 
-            episodes=5, 
-            seed=cfg.seed + 20_000 + it * 100, 
-            deterministic=True, 
-            use_per_agent_rewards=getattr(cfg, 'use_per_agent_rewards', False),
-            recurrent=cfg.use_recurrent
-        ) 
+        if it % cfg.checkpoint_every == 0:
+            os.makedirs(cfg.checkpoint_dir, exist_ok=True)  
+            trainer.save_checkpoint(cfg.checkpoint_dir, it) 
 
         if it % cfg.log_every == 0: 
-            # --- Log to logger backend --- 
+
+            # Eval episodes 
+            eval_stats = evaluate_policy(
+                env = env, 
+                actor = actor, 
+                device = cfg.device, 
+                num_agents = cfg.num_agents, 
+                episodes = cfg.eval_episodes, 
+                seed = cfg.seed + 10_000 + it * 100, 
+                deterministic=False, 
+                use_per_agent_rewards=getattr(cfg, 'use_per_agent_rewards', False),
+                recurrent=cfg.use_recurrent 
+            )
+
+            # Optional deterministic (argmax) evaluation too 
+            eval_stats_det = evaluate_policy(
+                env=env, 
+                actor=actor, 
+                device=cfg.device, 
+                num_agents=cfg.num_agents, 
+                episodes=cfg.eval_episodes_det, 
+                seed=cfg.seed + 20_000 + it * 100, 
+                deterministic=True, 
+                use_per_agent_rewards=getattr(cfg, 'use_per_agent_rewards', False),
+                recurrent=cfg.use_recurrent
+            ) 
+
+        
             if logger is not None: 
                 # Training diagnostics 
                 for k, v in stats.items(): 
@@ -406,7 +441,7 @@ def main():
             if getattr(cfg, 'use_per_agent_rewards', False) and 'eval/per_agent_return_mean' in eval_stats: 
                 means = eval_stats['eval/per_agent_return_mean']
                 print("  Per-agent return mean (First 5): ", np.array2string(means[:5], precision=2))
-                
+                    
 
     if logger is not None: 
         logger.close()
