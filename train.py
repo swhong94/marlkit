@@ -271,6 +271,10 @@ def parse_args():
     # Checkpoint Resume options 
     p.add_argument("--resume", type=str, default=None, 
                    help="Path to checkpoint to resume from .pt file to resume from")
+    
+    p.add_argument("--lr-schedule", choices=["constant", "linear"], default="constant", 
+                   help="LR schedule: constant or linear decay to 0")
+    
 
     return p.parse_args() 
 
@@ -299,6 +303,8 @@ def main():
     cfg.recurrent_hidden_dim = args.recurrent_hidden_dim 
     cfg.recurrent_num_layers = args.recurrent_num_layers 
     cfg.chunk_len = args.chunk_len 
+
+    cfg.lr_schedule = args.lr_schedule 
 
     if cfg.use_recurrent: 
         assert cfg.rollout_steps % cfg.chunk_len == 0, \
@@ -364,6 +370,10 @@ def main():
         )
 
     trainer, actor = build_trainer(algo=args.algo, env=env, cfg=cfg)
+
+    if cfg.lr_schedule == "linear": 
+        cfg._lr_total_iters = args.iter 
+        trainer._setup_lr_schedule() 
     
     start_iter = trainer.load_checkpoint(cfg.resume_from) if cfg.resume_from else 0
 

@@ -47,5 +47,21 @@ class PPOConfig:
 
     # Reward Handling 
     use_per_agent_rewards: bool = False # True for PettingZoo envs with per-agent rewards 
+
+    # Evaluation 
+    eval_episodes: int = 10 
+    eval_episodes_det: int = 5 
+
+    # Checkpointing 
+    checkpoint_dir: str = "checkpoints" 
+    checkpoint_every: int = 50 
+    resume_from: str | None = None 
+
+    # Optimization 
+    actor_lr: float = 3e-4 
+    critic_lr: float = 3e-4 
+    weight_decay: float = 0.0 
+    lr_schedule: str = "constant" # "constant", "linear" (decay to 0) 
+    
     
      

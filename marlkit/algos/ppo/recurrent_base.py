@@ -42,6 +42,49 @@ class RecurrentBasePPOTrainer(abc.ABC):
             device=cfg.device
         )
 
+    def _setup_lr_schedule(self,): 
+        """Create LR schedulers based on cfg.lr_schedule."""
+        if self.cfg.lr_schedule == "linear": 
+            total = getattr(self.cfg, '_lr_total_iters', 1) 
+            lr_fn = lambda step: max(1.0 - step / total, 0.0) 
+            self.actor_sched = torch.optim.lr_scheduler.LambdaLR(self.actor_opt, lr_fn) 
+            self.critic_sched = torch.optim.lr_scheduler.LambdaLR(self.critic_opt, lr_fn) 
+        else:
+            self.actor_sched = None 
+            self.critic_sched = None 
+
+    def _step_lr_schedule(self, ): 
+        """Step LR schedulers (call once per update)"""
+        if self.actor_sched is not None: 
+            self.actor_sched.step() 
+            self.critic_sched.step() 
+
+    def save_checkpoint(self, path, iteration): 
+        """Save actor, critic, optimizers, and iteration to a .pth file."""
+        state = {
+            "iteration": iteration,
+            "actor": self.actor.state_dict(), 
+            "critic": self.critic.state_dict(), 
+            "actor_opt": self.actor_opt.state_dict(), 
+            "critic_opt": self.critic_opt.state_dict() 
+        }
+        if self.actor_sched is not None: 
+            state["actor_sched"] = self.actor_sched.state_dict() 
+            state["critic_sched"] = self.critic_sched.state_dict() 
+        torch.save(state, path) 
+
+    def load_checkpoint(self, path): 
+        """Load a checkpoint. Returns the saved iteration number."""
+        ckpt = torch.load(path, map_location=self.device) 
+        self.actor.load_state_dict(ckpt["actor"])
+        self.critic.load_state_dict(ckpt["critic"]) 
+        self.actor_opt.load_state_dict(ckpt["actor_opt"]) 
+        self.critic_opt.load_state_dict(ckpt["critic_opt"])
+        if self.actor_sched is not None and "actor_sched" in ckpt: 
+            self.actor_sched.load_state_dict(ckpt["actor_sched"]) 
+            self.critic_sched.load_state_dict(ckpt["critic_sched"])
+        return ckpt.get("iteration") 
+
     # ---- Subclass must define critic_batch ---- 
     @property 
     @abc.abstractmethod 
@@ -326,6 +369,9 @@ class RecurrentBasePPOTrainer(abc.ABC):
         m = max(1, diag["num_minibatches"]) 
         out = {k: v/m for k, v in diag.items() if k!= "num_minibatches"}
         out["explained_variance"] = ev 
+
+        self._step_lr_schedule() 
+
         return out 
     
     def _build_hidden(self, h, c): 

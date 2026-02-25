@@ -33,7 +33,6 @@ class MultiAgentRolloutBuffer:
         self.actions = np.zeros((T, N), dtype=np.int64) 
         self.logp = np.zeros((T, N), dtype=np.float32) 
         self.rewards = np.zeros((T, N), dtype=np.float32)
-        self.dones = np.zeros((T, ), dtype=np.float32)
         self.terminated = np.zeros((T, ), dtype=np.float32) 
         self.truncated = np.zeros((T, ), dtype=np.float32)  
         self.values = np.zeros((T, N), dtype=np.float32) 
@@ -44,13 +43,13 @@ class MultiAgentRolloutBuffer:
         self.ptr = 0 
 
     def add(self, obs, critic_obs, actions, logp, rewards, done, values, terminated: bool, truncated: bool, truncation_values=None):
+        assert self.ptr < self.T, f"Buffer overflow: ptr {self.ptr}, T={self.T}"
         t = self.ptr 
         self.obs[t] = obs 
         self.critic_obs[t] = critic_obs 
         self.actions[t] = actions 
         self.logp[t] = logp 
         self.rewards[t] = rewards 
-        self.dones[t] = float(done) 
         self.terminated[t] = float(terminated)
         self.truncated[t] = float(truncated) 
         self.values[t] = values 
